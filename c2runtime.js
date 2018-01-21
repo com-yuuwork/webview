@@ -16873,6 +16873,7 @@ cr.getObjectRefTable = function () { return [
 	cr.behaviors.Anchor,
 	cr.system_object.prototype.cnds.OnLayoutStart,
 	cr.plugins_.HTML_iFrame.prototype.acts.GetElement,
+	cr.plugins_.HTML_iFrame.prototype.acts.GoTo,
 	cr.system_object.prototype.acts.Wait,
 	cr.system_object.prototype.acts.GoToLayout
 ];};
