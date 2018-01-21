@@ -15138,6 +15138,326 @@ cr.system_object.prototype.loadFromJSON = function (o)
 cr.shaders = {};
 ;
 ;
+cr.plugins_.AJAX = function(runtime)
+{
+	this.runtime = runtime;
+};
+(function ()
+{
+	var isNWjs = false;
+	var path = null;
+	var fs = null;
+	var nw_appfolder = "";
+	var pluginProto = cr.plugins_.AJAX.prototype;
+	pluginProto.Type = function(plugin)
+	{
+		this.plugin = plugin;
+		this.runtime = plugin.runtime;
+	};
+	var typeProto = pluginProto.Type.prototype;
+	typeProto.onCreate = function()
+	{
+	};
+	pluginProto.Instance = function(type)
+	{
+		this.type = type;
+		this.runtime = type.runtime;
+		this.lastData = "";
+		this.curTag = "";
+		this.progress = 0;
+		this.timeout = -1;
+		isNWjs = this.runtime.isNWjs;
+		if (isNWjs)
+		{
+			path = require("path");
+			fs = require("fs");
+			var process = window["process"] || nw["process"];
+			nw_appfolder = path["dirname"](process["execPath"]) + "\\";
+		}
+	};
+	var instanceProto = pluginProto.Instance.prototype;
+	var theInstance = null;
+	window["C2_AJAX_DCSide"] = function (event_, tag_, param_)
+	{
+		if (!theInstance)
+			return;
+		if (event_ === "success")
+		{
+			theInstance.curTag = tag_;
+			theInstance.lastData = param_;
+			theInstance.runtime.trigger(cr.plugins_.AJAX.prototype.cnds.OnAnyComplete, theInstance);
+			theInstance.runtime.trigger(cr.plugins_.AJAX.prototype.cnds.OnComplete, theInstance);
+		}
+		else if (event_ === "error")
+		{
+			theInstance.curTag = tag_;
+			theInstance.runtime.trigger(cr.plugins_.AJAX.prototype.cnds.OnAnyError, theInstance);
+			theInstance.runtime.trigger(cr.plugins_.AJAX.prototype.cnds.OnError, theInstance);
+		}
+		else if (event_ === "progress")
+		{
+			theInstance.progress = param_;
+			theInstance.curTag = tag_;
+			theInstance.runtime.trigger(cr.plugins_.AJAX.prototype.cnds.OnProgress, theInstance);
+		}
+	};
+	instanceProto.onCreate = function()
+	{
+		theInstance = this;
+	};
+	instanceProto.saveToJSON = function ()
+	{
+		return { "lastData": this.lastData };
+	};
+	instanceProto.loadFromJSON = function (o)
+	{
+		this.lastData = o["lastData"];
+		this.curTag = "";
+		this.progress = 0;
+	};
+	var next_request_headers = {};
+	var next_override_mime = "";
+	instanceProto.doRequest = function (tag_, url_, method_, data_)
+	{
+		if (this.runtime.isDirectCanvas)
+		{
+			AppMobi["webview"]["execute"]('C2_AJAX_WebSide("' + tag_ + '", "' + url_ + '", "' + method_ + '", ' + (data_ ? '"' + data_ + '"' : "null") + ');');
+			return;
+		}
+		var self = this;
+		var request = null;
+		var doErrorFunc = function ()
+		{
+			self.curTag = tag_;
+			self.runtime.trigger(cr.plugins_.AJAX.prototype.cnds.OnAnyError, self);
+			self.runtime.trigger(cr.plugins_.AJAX.prototype.cnds.OnError, self);
+		};
+		var errorFunc = function ()
+		{
+			if (isNWjs)
+			{
+				var filepath = nw_appfolder + url_;
+				if (fs["existsSync"](filepath))
+				{
+					fs["readFile"](filepath, {"encoding": "utf8"}, function (err, data) {
+						if (err)
+						{
+							doErrorFunc();
+							return;
+						}
+						self.curTag = tag_;
+						self.lastData = data.replace(/\r\n/g, "\n")
+						self.runtime.trigger(cr.plugins_.AJAX.prototype.cnds.OnAnyComplete, self);
+						self.runtime.trigger(cr.plugins_.AJAX.prototype.cnds.OnComplete, self);
+					});
+				}
+				else
+					doErrorFunc();
+			}
+			else
+				doErrorFunc();
+		};
+		var progressFunc = function (e)
+		{
+			if (!e["lengthComputable"])
+				return;
+			self.progress = e.loaded / e.total;
+			self.curTag = tag_;
+			self.runtime.trigger(cr.plugins_.AJAX.prototype.cnds.OnProgress, self);
+		};
+		try
+		{
+			if (this.runtime.isWindowsPhone8)
+				request = new ActiveXObject("Microsoft.XMLHTTP");
+			else
+				request = new XMLHttpRequest();
+			request.onreadystatechange = function()
+			{
+				if (request.readyState === 4)
+				{
+					self.curTag = tag_;
+					if (request.responseText)
+						self.lastData = request.responseText.replace(/\r\n/g, "\n");		// fix windows style line endings
+					else
+						self.lastData = "";
+					if (request.status >= 400)
+					{
+						self.runtime.trigger(cr.plugins_.AJAX.prototype.cnds.OnAnyError, self);
+						self.runtime.trigger(cr.plugins_.AJAX.prototype.cnds.OnError, self);
+					}
+					else
+					{
+						if ((!isNWjs || self.lastData.length) && !(!isNWjs && request.status === 0 && !self.lastData.length))
+						{
+							self.runtime.trigger(cr.plugins_.AJAX.prototype.cnds.OnAnyComplete, self);
+							self.runtime.trigger(cr.plugins_.AJAX.prototype.cnds.OnComplete, self);
+						}
+					}
+				}
+			};
+			if (!this.runtime.isWindowsPhone8)
+			{
+				request.onerror = errorFunc;
+				request.ontimeout = errorFunc;
+				request.onabort = errorFunc;
+				request["onprogress"] = progressFunc;
+			}
+			request.open(method_, url_);
+			if (!this.runtime.isWindowsPhone8)
+			{
+				if (this.timeout >= 0 && typeof request["timeout"] !== "undefined")
+					request["timeout"] = this.timeout;
+			}
+			try {
+				request.responseType = "text";
+			} catch (e) {}
+			if (data_)
+			{
+				if (request["setRequestHeader"] && !next_request_headers.hasOwnProperty("Content-Type"))
+				{
+					request["setRequestHeader"]("Content-Type", "application/x-www-form-urlencoded");
+				}
+			}
+			if (request["setRequestHeader"])
+			{
+				var p;
+				for (p in next_request_headers)
+				{
+					if (next_request_headers.hasOwnProperty(p))
+					{
+						try {
+							request["setRequestHeader"](p, next_request_headers[p]);
+						}
+						catch (e) {}
+					}
+				}
+				next_request_headers = {};
+			}
+			if (next_override_mime && request["overrideMimeType"])
+			{
+				try {
+					request["overrideMimeType"](next_override_mime);
+				}
+				catch (e) {}
+				next_override_mime = "";
+			}
+			if (data_)
+				request.send(data_);
+			else
+				request.send();
+		}
+		catch (e)
+		{
+			errorFunc();
+		}
+	};
+	function Cnds() {};
+	Cnds.prototype.OnComplete = function (tag)
+	{
+		return cr.equals_nocase(tag, this.curTag);
+	};
+	Cnds.prototype.OnAnyComplete = function (tag)
+	{
+		return true;
+	};
+	Cnds.prototype.OnError = function (tag)
+	{
+		return cr.equals_nocase(tag, this.curTag);
+	};
+	Cnds.prototype.OnAnyError = function (tag)
+	{
+		return true;
+	};
+	Cnds.prototype.OnProgress = function (tag)
+	{
+		return cr.equals_nocase(tag, this.curTag);
+	};
+	pluginProto.cnds = new Cnds();
+	function Acts() {};
+	Acts.prototype.Request = function (tag_, url_)
+	{
+		var self = this;
+		if (this.runtime.isWKWebView && !this.runtime.isAbsoluteUrl(url_))
+		{
+			this.runtime.fetchLocalFileViaCordovaAsText(url_,
+			function (str)
+			{
+				self.curTag = tag_;
+				self.lastData = str.replace(/\r\n/g, "\n");		// fix windows style line endings
+				self.runtime.trigger(cr.plugins_.AJAX.prototype.cnds.OnAnyComplete, self);
+				self.runtime.trigger(cr.plugins_.AJAX.prototype.cnds.OnComplete, self);
+			},
+			function (err)
+			{
+				self.curTag = tag_;
+				self.runtime.trigger(cr.plugins_.AJAX.prototype.cnds.OnAnyError, self);
+				self.runtime.trigger(cr.plugins_.AJAX.prototype.cnds.OnError, self);
+			});
+		}
+		else
+		{
+			this.doRequest(tag_, url_, "GET");
+		}
+	};
+	Acts.prototype.RequestFile = function (tag_, file_)
+	{
+		var self = this;
+		if (this.runtime.isWKWebView)
+		{
+			this.runtime.fetchLocalFileViaCordovaAsText(file_,
+			function (str)
+			{
+				self.curTag = tag_;
+				self.lastData = str.replace(/\r\n/g, "\n");		// fix windows style line endings
+				self.runtime.trigger(cr.plugins_.AJAX.prototype.cnds.OnAnyComplete, self);
+				self.runtime.trigger(cr.plugins_.AJAX.prototype.cnds.OnComplete, self);
+			},
+			function (err)
+			{
+				self.curTag = tag_;
+				self.runtime.trigger(cr.plugins_.AJAX.prototype.cnds.OnAnyError, self);
+				self.runtime.trigger(cr.plugins_.AJAX.prototype.cnds.OnError, self);
+			});
+		}
+		else
+		{
+			this.doRequest(tag_, file_, "GET");
+		}
+	};
+	Acts.prototype.Post = function (tag_, url_, data_, method_)
+	{
+		this.doRequest(tag_, url_, method_, data_);
+	};
+	Acts.prototype.SetTimeout = function (t)
+	{
+		this.timeout = t * 1000;
+	};
+	Acts.prototype.SetHeader = function (n, v)
+	{
+		next_request_headers[n] = v;
+	};
+	Acts.prototype.OverrideMIMEType = function (m)
+	{
+		next_override_mime = m;
+	};
+	pluginProto.acts = new Acts();
+	function Exps() {};
+	Exps.prototype.LastData = function (ret)
+	{
+		ret.set_string(this.lastData);
+	};
+	Exps.prototype.Progress = function (ret)
+	{
+		ret.set_float(this.progress);
+	};
+	Exps.prototype.Tag = function (ret)
+	{
+		ret.set_string(this.curTag);
+	};
+	pluginProto.exps = new Exps();
+}());
+;
+;
 cr.plugins_.Browser = function(runtime)
 {
 	this.runtime = runtime;
@@ -16708,6 +17028,229 @@ function C2(e) {
 }());
 ;
 ;
+cr.plugins_.XML = function(runtime)
+{
+	this.runtime = runtime;
+	if (this.runtime.isIE)
+	{
+		var x = {};
+		window["XPathResult"] = x;
+		x.NUMBER_TYPE = 1;
+		x.STRING_TYPE = 2;
+		x.UNORDERED_NODE_SNAPSHOT_TYPE = 6;
+		x.ORDERED_NODE_SNAPSHOT_TYPE = 7;
+	}
+};
+(function ()
+{
+	var pluginProto = cr.plugins_.XML.prototype;
+	pluginProto.Type = function(plugin)
+	{
+		this.plugin = plugin;
+		this.runtime = plugin.runtime;
+	};
+	var typeProto = pluginProto.Type.prototype;
+	typeProto.onCreate = function()
+	{
+	};
+	pluginProto.Instance = function(type)
+	{
+		this.type = type;
+		this.runtime = type.runtime;
+	};
+	var instanceProto = pluginProto.Instance.prototype;
+	instanceProto.onCreate = function()
+	{
+		this.xmlDoc = null;
+		this.nodeStack = [];
+		if (this.runtime.isDomFree)
+			cr.logexport("[Construct 2] The XML object is not supported on this platform.");
+	};
+	instanceProto.xpath_eval_one = function(xpath, result_type)
+	{
+		if (!this.xmlDoc)
+			return;
+		var root = this.nodeStack.length ? this.nodeStack[this.nodeStack.length - 1] : this.xmlDoc.documentElement;
+		try {
+			if (this.runtime.isIE)
+				return root.selectSingleNode(xpath);
+			else
+				return this.xmlDoc.evaluate(xpath, root, null, result_type, null);
+		}
+		catch (e) { return null; }
+	};
+	instanceProto.xpath_eval_many = function(xpath, result_type)
+	{
+		if (!this.xmlDoc)
+			return;
+		var root = this.nodeStack.length ? this.nodeStack[this.nodeStack.length - 1] : this.xmlDoc.documentElement;
+		try {
+			if (this.runtime.isIE)
+				return root.selectNodes(xpath);
+			else
+				return this.xmlDoc.evaluate(xpath, root, null, result_type, null);
+		}
+		catch (e) { return null; }
+	};
+	function Cnds() {};
+	instanceProto.doForEachIteration = function (current_event, item)
+	{
+		this.nodeStack.push(item);
+		this.runtime.pushCopySol(current_event.solModifiers);
+		current_event.retrigger();
+		this.runtime.popSol(current_event.solModifiers);
+		this.nodeStack.pop();
+	};
+	Cnds.prototype.ForEach = function (xpath)
+	{
+		if (this.runtime.isDomFree)
+			return false;
+		var current_event = this.runtime.getCurrentEventStack().current_event;
+		var result = this.xpath_eval_many(xpath, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE);
+		var i, len, x;
+		if (!result)
+			return false;
+		else
+		{
+			var current_loop = this.runtime.pushLoopStack();
+			if (this.runtime.isIE)
+			{
+				for (i = 0, len = result.length; i < len; i++)
+				{
+					current_loop.index = i;
+					this.doForEachIteration(current_event, result[i]);
+				}
+			}
+			else
+			{
+				for (i = 0, len = result.snapshotLength; i < len; i++)
+				{
+					current_loop.index = i;
+					this.doForEachIteration(current_event, result.snapshotItem(i));
+				}
+			}
+			this.runtime.popLoopStack();
+		}
+		return false;
+	};
+	pluginProto.cnds = new Cnds();
+	function Acts() {};
+	Acts.prototype.Load = function (str)
+	{
+		if (this.runtime.isDomFree)
+			return;
+		var xml, tmp;
+		var isWindows8 = !!(typeof window["c2isWindows8"] !== "undefined" && window["c2isWindows8"]);
+		try {
+			if (isWindows8)
+	        {
+	            xml = new Windows["Data"]["Xml"]["Dom"]["XmlDocument"]()
+	            xml["loadXml"](str);
+	        }
+			else if (this.runtime.isIE)
+			{
+				var versions = ["MSXML2.DOMDocument.6.0",
+                        "MSXML2.DOMDocument.3.0",
+                        "MSXML2.DOMDocument"];
+				for (var i = 0; i < 3; i++){
+					try {
+						xml = new ActiveXObject(versions[i]);
+						if (xml)
+							break;
+					} catch (ex){
+						xml = null;
+					}
+				}
+				if (xml)
+				{
+					xml.async = "false";
+					xml["loadXML"](str);
+				}
+			}
+			else {
+				tmp = new DOMParser();
+				xml = tmp.parseFromString(str, "text/xml");
+			}
+		} catch(e) {
+			xml = null;
+		}
+		if (xml)
+		{
+			this.xmlDoc = xml;
+			if (this.runtime.isIE && !isWindows8)
+				this.xmlDoc["setProperty"]("SelectionLanguage","XPath");
+		}
+	};
+	pluginProto.acts = new Acts();
+	function Exps() {};
+	Exps.prototype.NumberValue = function (ret, xpath)
+	{
+		if (this.runtime.isDomFree)
+		{
+			ret.set_int(0);
+			return;
+		}
+		var result = this.xpath_eval_one(xpath, XPathResult.NUMBER_TYPE);
+		if (!result)
+			ret.set_int(0);
+		else if (this.runtime.isIE)
+			ret.set_int(parseInt(result.nodeValue, 10));
+		else
+			ret.set_int(result.numberValue || 0);
+	};
+	Exps.prototype.StringValue = function (ret, xpath)
+	{
+		if (this.runtime.isDomFree)
+		{
+			ret.set_string("");
+			return;
+		}
+		var result;
+		if (/firefox/i.test(navigator.userAgent))
+		{
+			result = this.xpath_eval_one(xpath, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE);
+			if (!result)
+				ret.set_string("");
+			else
+			{
+				var i, len, totalstr = "";
+				for (i = 0, len = result.snapshotLength; i < len; i++)
+				{
+					totalstr += result.snapshotItem(i).textContent;
+				}
+				ret.set_string(totalstr);
+			}
+		}
+		else
+		{
+			result = this.xpath_eval_one(xpath, XPathResult.STRING_TYPE);
+			if (!result)
+				ret.set_string("");
+			else if (this.runtime.isIE)
+				ret.set_string((result.nodeValue || result.nodeTypedValue) || "");
+			else
+				ret.set_string(result.stringValue || "");
+		}
+	};
+	Exps.prototype.NodeCount = function (ret, xpath)
+	{
+		if (this.runtime.isDomFree)
+		{
+			ret.set_int(0);
+			return;
+		}
+		var result = this.xpath_eval_many(xpath, XPathResult.UNORDERED_NODE_SNAPSHOT_TYPE);
+		if (!result)
+			ret.set_int(0);
+		else if (this.runtime.isIE)
+			ret.set_int(result.length || 0);
+		else
+			ret.set_int(result.snapshotLength || 0);
+	};
+	pluginProto.exps = new Exps();
+}());
+;
+;
 cr.behaviors.Anchor = function(runtime)
 {
 	this.runtime = runtime;
@@ -16867,13 +17410,16 @@ cr.behaviors.Anchor = function(runtime)
 	behaviorProto.exps = new Exps();
 }());
 cr.getObjectRefTable = function () { return [
+	cr.plugins_.AJAX,
 	cr.plugins_.Browser,
 	cr.plugins_.Function,
+	cr.plugins_.XML,
 	cr.plugins_.HTML_iFrame,
 	cr.behaviors.Anchor,
 	cr.system_object.prototype.cnds.OnLayoutStart,
-	cr.plugins_.HTML_iFrame.prototype.acts.GetElement,
-	cr.plugins_.HTML_iFrame.prototype.acts.GoTo,
+	cr.plugins_.Function.prototype.acts.CallFunction,
 	cr.system_object.prototype.acts.Wait,
-	cr.system_object.prototype.acts.GoToLayout
+	cr.system_object.prototype.acts.GoToLayout,
+	cr.plugins_.Function.prototype.cnds.OnFunction,
+	cr.plugins_.HTML_iFrame.prototype.acts.GoTo
 ];};
